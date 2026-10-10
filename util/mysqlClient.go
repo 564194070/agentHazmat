@@ -5,12 +5,17 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sync"
 
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
 
-var mysqlClient *MySQLClient
+var (
+	mysqlClient *MySQLClient
+	mysqlOnce   sync.Once
+	mysqlErr    error
+)
 
 type MySQLClientConfig struct {
 	User     string
@@ -52,37 +57,46 @@ type MySQLClient struct {
 	GormDB *gorm.DB
 }
 
+// InitMySQLClient 进程内只初始化一次；失败时返回首次错误。
+func InitMySQLClient() error {
+	mysqlOnce.Do(func() {
+		config := NewMySQLClientConfig(os.Getenv("MYSQL_USER_DBNAME"))
+		dsn := config.GetDSN()
+
+		db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+		if err != nil {
+			slog.Error("open db failed", "error", err)
+			mysqlErr = err
+			return
+		}
+
+		sqlDB, err := db.DB()
+		if err != nil {
+			slog.Error("get sql db failed", "error", err)
+			mysqlErr = err
+			return
+		}
+
+		sqlDB.SetMaxIdleConns(10)
+		sqlDB.SetMaxOpenConns(100)
+
+		if err := sqlDB.Ping(); err != nil {
+			slog.Error("ping db failed", "error", err)
+			_ = sqlDB.Close()
+			mysqlErr = err
+			return
+		}
+
+		mysqlClient = &MySQLClient{SqlDB: sqlDB, GormDB: db}
+	})
+	return mysqlErr
+}
+
+// NewMySQLClient 兼容旧调用，内部走单例初始化。
 func NewMySQLClient() (*MySQLClient, error) {
-
-	config := NewMySQLClientConfig(os.Getenv("MYSQL_USER_DBNAME"))
-	dsn := config.GetDSN()
-
-	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
-	if err != nil {
-		slog.Error("open db failed", "error", err)
+	if err := InitMySQLClient(); err != nil {
 		return nil, err
 	}
-
-	sqlDB, err := db.DB()
-	if err != nil {
-		slog.Error("get sql db failed", "error", err)
-		return nil, err
-	}
-
-	// SetMaxIdleConns 设置空闲连接池中连接的最大数量。
-	sqlDB.SetMaxIdleConns(10)
-
-	// SetMaxOpenConns 设置打开数据库连接的最大数量。
-	sqlDB.SetMaxOpenConns(100)
-
-	if err := sqlDB.Ping(); err != nil {
-		slog.Error("ping db failed", "error", err)
-		_ = sqlDB.Close()
-		return nil, err
-	}
-
-	mysqlClient = &MySQLClient{SqlDB: sqlDB, GormDB: db}
-
 	return mysqlClient, nil
 }
 

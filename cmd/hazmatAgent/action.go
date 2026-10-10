@@ -15,7 +15,7 @@ func ServerAction(ctx context.Context, cmd *cli.Command) error {
 	// 服务端接口
 	port := getServerPort(cmd)
 
-	if _, err := util.NewMySQLClient(); err != nil {
+	if err := util.InitMySQLClient(); err != nil {
 		slog.Error("初始化 MySQL 失败", "error", err)
 		return err
 	}
